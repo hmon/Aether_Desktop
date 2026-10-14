@@ -68,7 +68,26 @@ mod zt_web;
 mod tor_native;
 mod tor_relay;
 // <<< AETHER-APP-PATCH tor-native-carrier
+#[cfg(windows)]
 mod tun;
+/// No Wintun off Windows: the data path is the system proxy, same as when
+/// wintun.dll is missing on Windows.
+#[cfg(not(windows))]
+mod tun {
+    pub struct Tunnel;
+    impl Tunnel {
+        pub fn establish(
+            _: &crate::profile::ConnectionProfile,
+            _: &std::path::Path,
+        ) -> anyhow::Result<Self> {
+            anyhow::bail!("no TUN adapter on this platform")
+        }
+        pub fn counters(&self) -> (u64, u64) {
+            (0, 0)
+        }
+        pub fn close(&mut self) {}
+    }
+}
 mod window;
 
 use ai_session::{AiSession, AiSnapshot};
@@ -304,7 +323,7 @@ fn about_info() -> serde_json::Value {
 fn core_caps() -> serde_json::Value {
     let exe = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("engine").join("aether.exe")))
+        .and_then(|p| p.parent().map(|d| d.join("engine").join(engine::ENGINE_EXE)))
         .unwrap_or_default();
     let caps = engine::engine_caps(&exe);
     serde_json::json!({

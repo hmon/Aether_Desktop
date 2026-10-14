@@ -1,6 +1,7 @@
 # build output
 /dist/
 /dist-engine/
+/dist-engine-macos/
 /src-tauri/target/
 /native/aether/**/target/
 /native/.core-prev/

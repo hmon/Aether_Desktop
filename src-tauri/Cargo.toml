@@ -19,7 +19,6 @@ serde_json = "1"
 anyhow = "1"
 parking_lot = "0.12"
 # Wintun — معادل ویندوزیِ VpnService + hev-tun در اندروید
-wintun = "0.5"
 # ۱.۲.۵-perf — `ipstack` و `tokio` از این‌جا برداشته شدند.
 #
 # هیچ‌یک در `src-tauri/src/` استفاده نمی‌شد: تنها اشارهٔ `ipstack` یک کامنت در
@@ -32,6 +31,7 @@ wintun = "0.5"
 native-tls = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+wintun = "0.5"
 windows = { version = "0.58", features = [
   "Win32_Foundation",
   "Win32_NetworkManagement_IpHelper",

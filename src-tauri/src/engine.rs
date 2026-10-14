@@ -144,6 +144,15 @@ pub fn reset_exit_socks_port() {
     set_exit_socks_port(LOCAL_SOCKS_PORT);
 }
 
+#[cfg(windows)]
+pub const ENGINE_EXE: &str = "aether.exe";
+#[cfg(not(windows))]
+pub const ENGINE_EXE: &str = "aether";
+#[cfg(windows)]
+const PSIPHON_EXE: &str = "psiphon-tunnel-core.exe";
+#[cfg(not(windows))]
+const PSIPHON_EXE: &str = "psiphon-tunnel-core";
+
 /// نسخهٔ هستهٔ همراه برنامه — از فایل CORE_VERSION کنار aether.exe خوانده
 /// می‌شود (همان فایلی که پنل About نشان می‌دهد). در صورت هر ابهامی (0،0)
 /// برمی‌گردد تا رفتار محافظه‌کارانه باشد.
@@ -267,7 +276,7 @@ impl AetherProcess {
                     "engine",
                     &format!("Could not stage the engine in a writable folder ({e}); running it from the install folder."),
                 );
-                bundled_dir.join("aether.exe")
+                bundled_dir.join(ENGINE_EXE)
             }
         };
         Self {
@@ -303,7 +312,7 @@ impl AetherProcess {
                 .ok_or_else(|| anyhow!("Bundled Psiphon asset missing: {name}"))
         };
         Ok((
-            find("psiphon-tunnel-core.exe")?,
+            find(PSIPHON_EXE)?,
             find("server_entries.txt")?,
         ))
     }
@@ -858,7 +867,7 @@ impl Drop for AetherProcess {
 fn prepare_runtime_engine(bundled_dir: &Path, working_dir: &Path) -> Result<PathBuf> {
     let runtime_dir = working_dir.join("engine");
     if runtime_dir == *bundled_dir {
-        let exe = runtime_dir.join("aether.exe");
+        let exe = runtime_dir.join(ENGINE_EXE);
         return if exe.exists() {
             Ok(exe)
         } else {
@@ -945,11 +954,11 @@ fn prepare_runtime_engine(bundled_dir: &Path, working_dir: &Path) -> Result<Path
             let _ = std::fs::copy(&src, &dst);
         }
     }
-    let exe = runtime_dir.join("aether.exe");
+    let exe = runtime_dir.join(ENGINE_EXE);
     if !exe.exists() {
         return Err(anyhow!(
             "Engine binary missing: {}",
-            bundled_dir.join("aether.exe").display()
+            bundled_dir.join(ENGINE_EXE).display()
         ));
     }
     Ok(exe)

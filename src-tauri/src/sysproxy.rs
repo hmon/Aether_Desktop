@@ -19,6 +19,9 @@
 //! `socks=` هم دارد. مرورگرهای کرومیوم همین ورودی را برمی‌دارند و با SOCKS5
 //! نامِ مقصد را هم داخل تونل حل می‌کنند (بدون نشت DNS).
 
+// macOS uses `mod mac` below; the registry path is Windows-only there.
+#![cfg_attr(target_os = "macos", allow(dead_code))]
+
 use crate::log::DiagnosticsLog;
 use parking_lot::Mutex;
 use std::process::Command;
@@ -47,6 +50,7 @@ fn saved_proxy() -> &'static Mutex<Option<SavedProxy>> {
 }
 
 /// فعال‌سازی پروکسی سیستمی روی پل محلی. `true` یعنی ثبت شد.
+#[cfg(not(target_os = "macos"))]
 pub fn enable(http_port: u16, socks_port: u16) -> bool {
     // Snapshot every value we touch exactly once. Disabling ProxyEnable is not
     // restoration: it destroys the user's previous proxy/PAC configuration.
@@ -122,6 +126,7 @@ pub fn enable(http_port: u16, socks_port: u16) -> bool {
 
 /// Recover only an interrupted Aether session. A normal app launch must not
 /// disable an unrelated user proxy, PAC, VPN, or enterprise configuration.
+#[cfg(not(target_os = "macos"))]
 pub fn recover_stale() -> bool {
     let has_backup = load_persistent_backup().is_some();
     let points_to_aether = reg_read("ProxyServer")
@@ -135,6 +140,7 @@ pub fn recover_stale() -> bool {
 }
 
 /// غیرفعال‌سازی پروکسی سیستمی — در قطع اتصال، خطا و خروج برنامه صدا زده می‌شود.
+#[cfg(not(target_os = "macos"))]
 pub fn disable() -> bool {
     let snapshot = saved_proxy().lock().take().or_else(load_persistent_backup);
     let had_snapshot = snapshot.is_some();
@@ -322,6 +328,204 @@ fn broadcast_change() {
 
 #[cfg(not(windows))]
 fn broadcast_change() {}
+
+#[cfg(target_os = "macos")]
+pub use mac::{disable, enable, recover_stale};
+
+/// macOS: the same three proxies, set with `networksetup` on every enabled
+/// network service that has a real device (Wi-Fi, Ethernet…). The previous
+/// values go to disk first, so a crash is still restored on the next launch.
+#[cfg(target_os = "macos")]
+mod mac {
+    use super::DiagnosticsLog;
+    use serde::{Deserialize, Serialize};
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    const KINDS: [&str; 3] = ["webproxy", "securewebproxy", "socksfirewallproxy"];
+    const BYPASS: [&str; 6] = [
+        "localhost",
+        "127.0.0.1",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "*.local",
+    ];
+
+    #[derive(Serialize, Deserialize)]
+    struct Proxy {
+        kind: String,
+        enabled: bool,
+        server: String,
+        port: String,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct Service {
+        name: String,
+        proxies: Vec<Proxy>,
+        bypass: Vec<String>,
+    }
+
+    fn ns(args: &[&str]) -> Option<String> {
+        let out = Command::new("/usr/sbin/networksetup").args(args).output().ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    fn backup_path() -> PathBuf {
+        PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+            .join("Library/Application Support/studio.cluvex.aether.desktop/sysproxy-backup.json")
+    }
+
+    /// `(1) Wi-Fi` / `(Hardware Port: Wi-Fi, Device: en1)` pairs; disabled
+    /// services are `(*) Name`, VPN services have an empty device.
+    fn services() -> Vec<String> {
+        parse_services(&ns(&["-listnetworkserviceorder"]).unwrap_or_default())
+    }
+
+    fn parse_services(order: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut current: Option<String> = None;
+        for line in order.lines() {
+            match line.strip_prefix('(').and_then(|r| r.split_once(") ")) {
+                Some((idx, name)) if idx.bytes().all(|b| b.is_ascii_digit()) => {
+                    current = Some(name.to_string());
+                }
+                _ => {
+                    if let (Some(name), Some(dev)) = (current.take(), line.split("Device: ").nth(1)) {
+                        if !dev.trim_end_matches(')').trim().is_empty() {
+                            names.push(name);
+                        }
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    fn read(svc: &str, kind: &str) -> Option<Proxy> {
+        let out = ns(&[&format!("-get{kind}"), svc])?;
+        let field = |k: &str| {
+            out.lines()
+                .find_map(|l| l.strip_prefix(k))
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
+        Some(Proxy {
+            kind: kind.to_string(),
+            enabled: field("Enabled:") == "Yes",
+            server: field("Server:"),
+            port: field("Port:"),
+        })
+    }
+
+    fn read_bypass(svc: &str) -> Vec<String> {
+        // "There aren't any bypass domains set on …" is the empty answer.
+        ns(&["-getproxybypassdomains", svc])
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.contains(' '))
+            .map(String::from)
+            .collect()
+    }
+
+    fn set_bypass(svc: &str, domains: &[&str]) -> bool {
+        let mut args = vec!["-setproxybypassdomains", svc];
+        args.extend(if domains.is_empty() { &["Empty"][..] } else { domains });
+        ns(&args).is_some()
+    }
+
+    pub fn enable(http_port: u16, socks_port: u16) -> bool {
+        let path = backup_path();
+        // An existing backup is the user's real state from an interrupted
+        // session; snapshotting again would capture Aether's own values.
+        if !path.exists() {
+            let snapshot: Vec<Service> = services()
+                .into_iter()
+                .map(|name| Service {
+                    proxies: KINDS.iter().filter_map(|k| read(&name, k)).collect(),
+                    bypass: read_bypass(&name),
+                    name,
+                })
+                .collect();
+            let written = path
+                .parent()
+                .map(std::fs::create_dir_all)
+                .unwrap_or(Ok(()))
+                .and_then(|_| std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap_or_default()));
+            if let Err(e) = written {
+                DiagnosticsLog::e("sysproxy", &format!("Could not back up the proxy settings ({e})."));
+                return false;
+            }
+        }
+        let mut ok = false;
+        for svc in services() {
+            let mut this = set_bypass(&svc, &BYPASS);
+            for (kind, port) in KINDS.iter().zip([http_port, http_port, socks_port]) {
+                this &= ns(&[&format!("-set{kind}"), &svc, "127.0.0.1", &port.to_string()]).is_some();
+            }
+            ok |= this;
+        }
+        if !ok {
+            let _ = disable();
+            DiagnosticsLog::e("sysproxy", "networksetup could not set the system proxy.");
+            return false;
+        }
+        DiagnosticsLog::i(
+            "sysproxy",
+            &format!("System proxy enabled -> http/https 127.0.0.1:{http_port}, socks 127.0.0.1:{socks_port}"),
+        );
+        true
+    }
+
+    pub fn disable() -> bool {
+        let path = backup_path();
+        let Some(snapshot) = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Vec<Service>>(&b).ok())
+        else {
+            return true;
+        };
+        let mut ok = true;
+        for svc in &snapshot {
+            for p in &svc.proxies {
+                if !p.server.is_empty() {
+                    ok &= ns(&[&format!("-set{}", p.kind), &svc.name, &p.server, &p.port]).is_some();
+                }
+                if p.server.is_empty() || !p.enabled {
+                    ok &= ns(&[&format!("-set{}state", p.kind), &svc.name, "off"]).is_some();
+                }
+            }
+            let bypass: Vec<&str> = svc.bypass.iter().map(String::as_str).collect();
+            ok &= set_bypass(&svc.name, &bypass);
+        }
+        if ok {
+            let _ = std::fs::remove_file(&path);
+            DiagnosticsLog::i("sysproxy", "System proxy settings restored to their pre-Aether state.");
+        } else {
+            DiagnosticsLog::e("sysproxy", "Could not fully restore the pre-Aether system proxy settings.");
+        }
+        ok
+    }
+
+    pub fn recover_stale() -> bool {
+        !backup_path().exists() || disable()
+    }
+
+    #[test]
+    fn parse_services_keeps_enabled_hardware_services() {
+        let order = "An asterisk (*) denotes that a network service is disabled.\n\
+            (1) Ethernet\n(Hardware Port: Ethernet, Device: en0)\n\n\
+            (2) Wi-Fi (Home)\n(Hardware Port: Wi-Fi, Device: en1)\n\n\
+            (*) Thunderbolt Bridge\n(Hardware Port: Thunderbolt Bridge, Device: bridge0)\n\n\
+            (3) V2BOX\n(Hardware Port: hossin.asaadi.V2Box, Device: )\n";
+        assert_eq!(parse_services(order), ["Ethernet", "Wi-Fi (Home)"]);
+    }
+}
 
 #[cfg(test)]
 mod tests {

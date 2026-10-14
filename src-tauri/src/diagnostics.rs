@@ -698,7 +698,7 @@ pub fn run(profile: &ConnectionProfile) -> Report {
     // ۱) باینری موتور
     let engine_exe = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("engine").join("aether.exe")));
+        .and_then(|p| p.parent().map(|d| d.join("engine").join(crate::engine::ENGINE_EXE)));
     checks.push(match &engine_exe {
         Some(p) if p.exists() => check("Engine binary", Verdict::Pass, p.display().to_string()),
         Some(p) => check(
