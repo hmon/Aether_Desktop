@@ -6,6 +6,7 @@
 #   psiphon-tunnel-core  built here from the pinned Psiphon commit
 #   tor/                 official Tor expert bundle (tor, lyrebird, conjure, geoip)
 #   xray/xray            official Xray release (custom configs)
+#   sing-box/sing-box    official sing-box release (TUN mode, see tun_macos.rs)
 # Output: src-tauri/target/release/bundle/{macos/Aether.app,dmg/*.dmg}
 set -euo pipefail
 
@@ -14,12 +15,14 @@ TOR_VERSION=15.0.23
 TOR_SHA256=e8ea3f667c83309abad34280f0f9e1cfae52843da6b8db111ca15d6221051db5
 XRAY_VERSION=v25.12.8
 XRAY_SHA256=cde3406670061f4b9fad672727d1e616e6c335db2fb414456991c0246a368c7c
+SINGBOX_VERSION=1.14.3
+SINGBOX_SHA256=0360ce634a04c26a6b4fd957517987bb4f6c8950f63435ce3c5af2fcae5860c5
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 out=$root/dist-engine-macos
 tmp=${TMPDIR:-/tmp}/aether-macos
 mkdir -p "$tmp"
-rm -rf "$out" && mkdir -p "$out/tor" "$out/xray"
+rm -rf "$out" && mkdir -p "$out/tor" "$out/xray" "$out/sing-box"
 
 # A Command Line Tools SDK newer than Xcode's linker breaks BoringSSL's CMake
 # ("tapi error: unknown architecture"); Xcode's own SDK always matches it.
@@ -55,6 +58,10 @@ cp "$tmp"/tor/tor/{tor,libevent-*.dylib} "$tmp"/tor/tor/pluggable_transports/{ly
 echo "==> Xray $XRAY_VERSION"
 fetch "https://github.com/XTLS/Xray-core/releases/download/$XRAY_VERSION/Xray-macos-arm64-v8a.zip" $XRAY_SHA256 "$tmp/xray.zip"
 unzip -oq "$tmp/xray.zip" xray -d "$out/xray"
+
+echo "==> sing-box $SINGBOX_VERSION"
+fetch "https://github.com/SagerNet/sing-box/releases/download/v$SINGBOX_VERSION/sing-box-$SINGBOX_VERSION-darwin-arm64.tar.gz" $SINGBOX_SHA256 "$tmp/sing-box.tar.gz"
+tar xzf "$tmp/sing-box.tar.gz" -C "$out/sing-box" --strip-components 1 "sing-box-$SINGBOX_VERSION-darwin-arm64/sing-box"
 
 # Apple Silicon refuses to exec unsigned Mach-O (the Tor bundle ships unsigned).
 find "$out" -type f | while read -r f; do

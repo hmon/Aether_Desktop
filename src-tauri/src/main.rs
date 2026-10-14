@@ -70,9 +70,12 @@ mod tor_relay;
 // <<< AETHER-APP-PATCH tor-native-carrier
 #[cfg(windows)]
 mod tun;
-/// No Wintun off Windows: the data path is the system proxy, same as when
+#[cfg(target_os = "macos")]
+#[path = "tun_macos.rs"]
+mod tun;
+/// No TUN elsewhere: the data path is the system proxy, same as when
 /// wintun.dll is missing on Windows.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 mod tun {
     pub struct Tunnel;
     impl Tunnel {
