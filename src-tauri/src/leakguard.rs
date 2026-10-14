@@ -15,7 +15,7 @@
 //!
 //! # درمان (سه لایهٔ مستقل)
 //! ۱. **سیاست رسمی مرورگر (بدون نیاز به Administrator).** برای خانوادهٔ
-//!    کرومیوم WebRtcIPHandlingPolicy = disable_non_proxied_udp و برای
+//!    کرومیوم WebRtcIPHandling = disable_non_proxied_udp و برای
 //!    فایرفاکس media.peerconnection.ice.proxy_only = 1 زیر
 //!    HKCU\Software\Policies نوشته می‌شود: WebRTC حق ندارد UDP غیرپروکسی
 //!    بفرستد، پس نامزد srflx اصلاً ساخته نمی‌شود.
@@ -30,6 +30,10 @@
 //! همهٔ تغییرها برگشت‌پذیرند: مقدار قبلی هر کلید در حافظه نگه داشته و هنگام
 //! قطع اتصال بازگردانده می‌شود، و purge_stale() در استارتاپ باقی‌ماندهٔ یک
 //! کرش را پاک می‌کند — هرگز نباید قاعده‌ای بعد از بستن برنامه بماند.
+
+// macOS stores the policy layer with `defaults` (helpers above `mod tests`);
+// the reg.exe / netsh helpers are Windows-only there.
+#![cfg_attr(target_os = "macos", allow(dead_code))]
 
 use crate::log::DiagnosticsLog;
 use crate::profile::ConnectionProfile;
@@ -91,7 +95,7 @@ const CHROMIUM_POLICY_KEYS: [&str; 7] = [
     r"HKCU\Software\Policies\Opera Software\Opera",
     r"HKCU\Software\Policies\Yandex\YandexBrowser",
 ];
-const CHROMIUM_POLICY_NAME: &str = "WebRtcIPHandlingPolicy";
+const CHROMIUM_POLICY_NAME: &str = "WebRtcIPHandling";
 const CHROMIUM_POLICY_VALUE: &str = "disable_non_proxied_udp";
 
 const FIREFOX_PREFS_KEY: &str = r"HKCU\Software\Policies\Mozilla\Firefox\Preferences";
@@ -677,6 +681,7 @@ fn netsh(args: &[String]) -> bool {
 /// توقفِ پل، جایی که تنها همین کار در آن است). حالا همه با هم شروع می‌شوند و
 /// بعد منتظرشان می‌مانیم: وقتی این تابع برمی‌گردد، رجیستری واقعاً برگشته
 /// است — همان تضمینی که نسخهٔ سریالی می‌داد.
+#[cfg(not(target_os = "macos"))]
 fn restore_policies(edits: Vec<PolicyEdit>) {
     let mut kids = Vec::with_capacity(edits.len() * 2);
     for edit in &edits {
@@ -708,22 +713,25 @@ fn reg_spawn(args: &[&str]) -> Option<std::process::Child> {
     cmd.spawn().ok()
 }
 
+#[cfg(not(target_os = "macos"))]
 fn reg_write(key: &str, name: &str, kind: &str, data: &str) -> bool {
     reg(&["add", key, "/v", name, "/t", kind, "/d", data, "/f"]).is_some()
 }
 
+#[cfg(not(target_os = "macos"))]
 fn reg_delete_value(key: &str, name: &str) -> bool {
     reg(&["delete", key, "/v", name, "/f"]).is_some()
 }
 
 /// خواندن یک مقدار — None یعنی وجود ندارد.
+#[cfg(not(target_os = "macos"))]
 fn reg_read(key: &str, name: &str) -> Option<String> {
     let out = reg(&["query", key, "/v", name])?;
     parse_reg_value(&out, name)
 }
 
 /// خروجی `reg query` را به مقدار خام تبدیل می‌کند.
-/// نمونه: "    WebRtcIPHandlingPolicy    REG_SZ    disable_non_proxied_udp"
+/// نمونه: "    WebRtcIPHandling    REG_SZ    disable_non_proxied_udp"
 fn parse_reg_value(output: &str, name: &str) -> Option<String> {
     for line in output.lines() {
         let trimmed = line.trim();
@@ -813,13 +821,78 @@ fn parse_default_value(output: &str) -> Option<String> {
     None
 }
 
+// macOS: the same policy values in each browser's own preferences domain,
+// written with `defaults`. Chrome reads them as a user-level ("Recommended")
+// platform policy. Firefox reads policies differently there and is not mapped.
+#[cfg(target_os = "macos")]
+fn mac_domain(key: &str) -> Option<&'static str> {
+    Some(match key.strip_prefix(r"HKCU\Software\Policies\")? {
+        r"Google\Chrome" => "com.google.Chrome",
+        r"Microsoft\Edge" => "com.microsoft.Edge",
+        r"BraveSoftware\Brave" => "com.brave.Browser",
+        "Vivaldi" => "com.vivaldi.Vivaldi",
+        "Chromium" => "org.chromium.Chromium",
+        r"Opera Software\Opera" => "com.operasoftware.Opera",
+        r"Yandex\YandexBrowser" => "ru.yandex.desktop.yandex-browser",
+        _ => return None,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn defaults(args: &[&str]) -> Option<String> {
+    let out = Command::new("/usr/bin/defaults").args(args).output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn reg_write(key: &str, name: &str, kind: &str, data: &str) -> bool {
+    let ty = if kind == "REG_DWORD" { "-int" } else { "-string" };
+    mac_domain(key)
+        .and_then(|d| defaults(&["write", d, name, ty, data]))
+        .is_some()
+}
+
+#[cfg(target_os = "macos")]
+fn reg_delete_value(key: &str, name: &str) -> bool {
+    mac_domain(key)
+        .and_then(|d| defaults(&["delete", d, name]))
+        .is_some()
+}
+
+#[cfg(target_os = "macos")]
+fn reg_read(key: &str, name: &str) -> Option<String> {
+    defaults(&["read", mac_domain(key)?, name])
+}
+
+#[cfg(target_os = "macos")]
+fn restore_policies(edits: Vec<PolicyEdit>) {
+    for edit in &edits {
+        match &edit.previous {
+            Some(v) => reg_write(&edit.key, &edit.name, edit.kind, v),
+            None => reg_delete_value(&edit.key, &edit.name),
+        };
+        reg_delete_value(&edit.key, SENTINEL_NAME);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn every_chromium_policy_key_has_a_macos_domain() {
+        for key in CHROMIUM_POLICY_KEYS {
+            assert!(mac_domain(key).is_some(), "{key}");
+        }
+        assert_eq!(mac_domain(FIREFOX_PREFS_KEY), None);
+    }
+
     #[test]
     fn parses_a_string_registry_value() {
-        let out = "\r\nHKEY_CURRENT_USER\\Software\\Policies\\Google\\Chrome\r\n    WebRtcIPHandlingPolicy    REG_SZ    disable_non_proxied_udp\r\n";
+        let out = "\r\nHKEY_CURRENT_USER\\Software\\Policies\\Google\\Chrome\r\n    WebRtcIPHandling    REG_SZ    disable_non_proxied_udp\r\n";
         assert_eq!(
             parse_reg_value(out, CHROMIUM_POLICY_NAME).as_deref(),
             Some(CHROMIUM_POLICY_VALUE)

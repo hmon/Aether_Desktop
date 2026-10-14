@@ -714,6 +714,8 @@ pub fn run(profile: &ConnectionProfile) -> Report {
     });
 
     // ۲) درایور Wintun — اختیاری؛ مسیر دادهٔ اصلی پروکسی سیستمی است
+    #[cfg(windows)]
+    {
     let wintun = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("engine").join("wintun.dll")));
@@ -725,8 +727,10 @@ pub fn run(profile: &ConnectionProfile) -> Report {
             "wintun.dll missing — system-proxy mode still works",
         ),
     });
+    }
 
     // ۳) دسترسی مدیر — فقط برای آداپتور Wintun لازم است، نه برای اتصال
+    #[cfg(windows)]
     checks.push(if is_elevated() {
         check("Administrator rights", Verdict::Pass, "Running elevated")
     } else {
@@ -898,7 +902,9 @@ mod tests {
                 "check `{expected}` is missing from {names:?}"
             );
         }
-        assert_eq!(r.checks.len(), 8, "checks were {names:?}");
+        // Wintun and administrator rights are Windows-only checks.
+        let expected = if cfg!(windows) { 8 } else { 6 };
+        assert_eq!(r.checks.len(), expected, "checks were {names:?}");
         assert!(!r.summary.is_empty());
     }
 
