@@ -645,7 +645,7 @@ pub fn self_test(grace_ms: u64) -> SelfTestOutcome {
 
 /// v8 audit: "1.2.3.4" -> "1.2.3.xxx" for the persistent rotating log so a
 /// leaked log file cannot reveal the exact exit IP. IPv6 keeps only the /48.
-fn mask_ip(ip: &str) -> String {
+pub(crate) fn mask_ip(ip: &str) -> String {
     if let Some((head, _)) = ip.rsplit_once('.') {
         return format!("{head}.xxx");
     }
@@ -683,7 +683,7 @@ pub struct Report {
     pub summary: String,
 }
 
-fn check(name: &str, verdict: Verdict, detail: impl Into<String>) -> Check {
+pub(crate) fn check(name: &str, verdict: Verdict, detail: impl Into<String>) -> Check {
     Check {
         name: name.into(),
         verdict,
@@ -740,6 +740,10 @@ pub fn run(profile: &ConnectionProfile) -> Report {
             "Not elevated — connection uses the Windows system proxy instead of a TUN adapter",
         )
     });
+
+    // ۳.۵) TUN on macOS: sing-box, its routes, where unproxied traffic exits.
+    #[cfg(target_os = "macos")]
+    checks.extend(crate::tun::checks());
 
     // ۴) پورت SOCKS5 محلی
     checks.push(if probe::socks_ready(engine::exit_socks_port()) {
@@ -902,8 +906,15 @@ mod tests {
                 "check `{expected}` is missing from {names:?}"
             );
         }
-        // Wintun and administrator rights are Windows-only checks.
-        let expected = if cfg!(windows) { 8 } else { 6 };
+        // Wintun/administrator on Windows; TUN component/routes/log on macOS
+        // (TUN egress only appears while the TUN is up).
+        let expected = if cfg!(windows) {
+            8
+        } else if cfg!(target_os = "macos") {
+            9
+        } else {
+            6
+        };
         assert_eq!(r.checks.len(), expected, "checks were {names:?}");
         assert!(!r.summary.is_empty());
     }
